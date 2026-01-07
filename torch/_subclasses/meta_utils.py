@@ -805,9 +805,33 @@ def _hashable_ctx(ctx: object) -> object:
         return repr(ctx)
 
 
+def _hashable_size(size: tuple) -> tuple:
+    """
+    Make size tuple hashable, handling SymInt values.
+
+    SymInt values are not directly hashable, so we convert them to their
+    node expression which is hashable.
+    """
+    result = []
+    for s in size:
+        if isinstance(s, int):
+            result.append(s)
+        elif isinstance(s, torch.SymInt):
+            # Use the underlying node's expr which is hashable
+            result.append(s.node.expr)
+        else:
+            # Fallback for any other type
+            try:
+                hash(s)
+                result.append(s)
+            except TypeError:
+                result.append(repr(s))
+    return tuple(result)
+
+
 def make_tensor_memo_key(
     tid: MetaTensorId,
-    size: tuple[int, ...],
+    size: tuple,
     dtype: torch.dtype,
     device: torch.device,
     tensor_type: Optional[type],
@@ -822,13 +846,13 @@ def make_tensor_memo_key(
 
     Args:
         tid: The tensor's MetaTensorId
-        size: The tensor's shape as a tuple
+        size: The tensor's shape as a tuple (may contain SymInt)
         dtype: The tensor's dtype
         device: The tensor's device
         tensor_type: The tensor's Python type (for subclasses), or None
         ctx: The subclass context from __tensor_flatten__, or None
     """
-    return (tid, size, dtype, device, tensor_type, _hashable_ctx(ctx))
+    return (tid, _hashable_size(size), dtype, device, tensor_type, _hashable_ctx(ctx))
 
 
 class MetaConverter(Generic[_TensorT]):
