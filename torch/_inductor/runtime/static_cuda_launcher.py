@@ -308,7 +308,6 @@ class StaticallyLaunchedCudaKernel:
             self.num_warps,
             self.shared,
             arg_tys,
-            # pyrefly: ignore [bad-argument-type]
             args,
             stream,
         )
