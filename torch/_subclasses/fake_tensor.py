@@ -342,14 +342,40 @@ class FakeTensorConverter:
         tid = self.meta_converter.describer.lookup_tensor.get(t)
         if tid is None:
             return None
-        # Key includes metadata (shape, dtype, device) so swapped tensors get cache miss
-        key = (tid, tuple(t.shape), t.dtype, t.device)
+        from torch._subclasses.meta_utils import make_tensor_memo_key
+
+        # Extract subclass type and ctx if applicable
+        tensor_type = None
+        ctx = None
+        if is_traceable_wrapper_subclass(t):
+            tensor_type = type(t)
+            try:
+                _, ctx = t.__tensor_flatten__()
+            except Exception:
+                pass
+
+        key = make_tensor_memo_key(
+            tid, tuple(t.shape), t.dtype, t.device, tensor_type, ctx
+        )
         return self.tensor_memo.get(key)
 
     def set_tensor_memo(self, t: Tensor, v: FakeTensor) -> None:
         tid = self.meta_converter.describer.get_tensor_id(t)
-        # Key includes metadata (shape, dtype, device) so swapped tensors get cache miss
-        key = (tid, tuple(t.shape), t.dtype, t.device)
+        from torch._subclasses.meta_utils import make_tensor_memo_key
+
+        # Extract subclass type and ctx if applicable
+        tensor_type = None
+        ctx = None
+        if is_traceable_wrapper_subclass(t):
+            tensor_type = type(t)
+            try:
+                _, ctx = t.__tensor_flatten__()
+            except Exception:
+                pass
+
+        key = make_tensor_memo_key(
+            tid, tuple(t.shape), t.dtype, t.device, tensor_type, ctx
+        )
         self.meta_converter.tensor_memo[key] = v
 
     # You can have a real tensor that you need to convert into a fake tensor.

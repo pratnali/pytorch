@@ -1456,6 +1456,94 @@ class FakeTensorConverterTest(TestCase):
         # Verify it's the exact same object (cache hit)
         self.assertIs(fake_A_before, fake_A_after_swap_back)
 
+    def test_swap_tensors_with_subclass_metadata(self):
+        """
+        Test that subclass metadata from __tensor_flatten__ is included in cache key.
+
+        If two tensors have the same shape/dtype/device/type but different
+        subclass metadata, they should have different cache entries.
+        """
+
+        # Define a simple subclass with metadata
+        class MetadataTensor(torch.Tensor):
+            @staticmethod
+            def __new__(cls, data, metadata):
+                return torch.Tensor._make_wrapper_subclass(
+                    cls,
+                    data.size(),
+                    strides=data.stride(),
+                    storage_offset=data.storage_offset(),
+                    dtype=data.dtype,
+                    layout=data.layout,
+                    device=data.device,
+                    requires_grad=data.requires_grad,
+                )
+
+            def __init__(self, data, metadata):
+                self._data = data
+                self._metadata = metadata
+
+            def __tensor_flatten__(self):
+                return ["_data"], self._metadata
+
+            @staticmethod
+            def __tensor_unflatten__(inner_tensors, metadata, outer_size, outer_stride):
+                return MetadataTensor(inner_tensors["_data"], metadata)
+
+            @classmethod
+            def __torch_dispatch__(cls, func, types, args, kwargs):
+                if kwargs is None:
+                    kwargs = {}
+
+                def unwrap(t):
+                    return t._data if isinstance(t, MetadataTensor) else t
+
+                def wrap(t, meta):
+                    return MetadataTensor(t, meta) if isinstance(t, torch.Tensor) else t
+
+                # Get metadata from first MetadataTensor arg
+                meta = None
+                for a in torch.utils._pytree.tree_leaves(args):
+                    if isinstance(a, MetadataTensor):
+                        meta = a._metadata
+                        break
+
+                args = torch.utils._pytree.tree_map(unwrap, args)
+                kwargs = torch.utils._pytree.tree_map(unwrap, kwargs)
+                out = func(*args, **kwargs)
+                return torch.utils._pytree.tree_map(lambda t: wrap(t, meta), out)
+
+        # Create two MetadataTensors with same shape but different metadata
+        data = torch.randn(2, 3)
+        A = MetadataTensor(data.clone(), {"version": 1})
+        B = MetadataTensor(data.clone(), {"version": 2})
+
+        # Both have same shape, dtype, device, and type
+        self.assertEqual(A.shape, B.shape)
+        self.assertEqual(A.dtype, B.dtype)
+        self.assertEqual(A.device, B.device)
+        self.assertEqual(type(A), type(B))
+
+        # But different metadata
+        self.assertNotEqual(A._metadata, B._metadata)
+
+        mode = FakeTensorMode()
+
+        # Convert A to fake
+        fake_A = mode.from_tensor(A)
+
+        # Swap A and B: A now has B's metadata
+        torch.utils.swap_tensors(A, B)
+
+        # Convert A (now with B's metadata) to fake
+        # This SHOULD be a cache miss because metadata changed
+        fake_A_after_swap = mode.from_tensor(A)
+
+        # The fake tensors should be different objects because metadata differs
+        # Note: This test documents the EXPECTED behavior. If it fails, we need
+        # to include __tensor_flatten__ metadata in the cache key.
+        self.assertIsNot(fake_A, fake_A_after_swap)
+
 
 make_propagate_real_tensors_cls(FakeTensorConverterTest)
 

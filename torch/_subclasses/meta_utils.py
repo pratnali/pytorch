@@ -783,16 +783,52 @@ def _safe_clone(src: torch.Tensor) -> Optional[torch.Tensor]:
 # share storage because this is how we correlate shared storages to the same
 # meta storages. This class will hold weak references to cached tenosrs
 # and tensor storages.
-# Cache key for tensor_memo: (MetaTensorId, shape, dtype, device)
+# Cache key for tensor_memo: (MetaTensorId, shape, dtype, device, type, subclass_ctx)
 # This ensures that if a tensor's properties change (e.g., via swap_tensors),
 # we get a cache miss and create a new fake tensor with correct properties.
 # If the tensor is swapped back, we get a cache hit and recover the original.
-_TensorMemoKey = tuple[MetaTensorId, tuple[int, ...], torch.dtype, torch.device]
+# The type and ctx are included to handle tensor subclass changes and metadata.
+_TensorMemoKey = tuple[
+    MetaTensorId, tuple[int, ...], torch.dtype, torch.device, Optional[type], object
+]
 
 
-def _make_tensor_memo_key(t: "MetaTensorDesc") -> _TensorMemoKey:
-    """Create a cache key from tensor descriptor including metadata."""
-    return (t.id, t.size, t.dtype, t.device)
+def _hashable_ctx(ctx: object) -> object:
+    """Make ctx hashable for use as a cache key component."""
+    if ctx is None:
+        return None
+    try:
+        hash(ctx)
+        return ctx
+    except TypeError:
+        # Not directly hashable, use repr as a fallback
+        return repr(ctx)
+
+
+def make_tensor_memo_key(
+    tid: MetaTensorId,
+    size: tuple[int, ...],
+    dtype: torch.dtype,
+    device: torch.device,
+    tensor_type: Optional[type],
+    ctx: object,
+) -> _TensorMemoKey:
+    """
+    Create a cache key for tensor_memo from raw components.
+
+    This is the single source of truth for key creation, ensuring consistency
+    between MetaConverter (working with MetaTensorDesc) and FakeTensorConverter
+    (working with actual Tensors).
+
+    Args:
+        tid: The tensor's MetaTensorId
+        size: The tensor's shape as a tuple
+        dtype: The tensor's dtype
+        device: The tensor's device
+        tensor_type: The tensor's Python type (for subclasses), or None
+        ctx: The subclass context from __tensor_flatten__, or None
+    """
+    return (tid, size, dtype, device, tensor_type, _hashable_ctx(ctx))
 
 
 class MetaConverter(Generic[_TensorT]):
@@ -823,15 +859,18 @@ class MetaConverter(Generic[_TensorT]):
         return self.hit > 0 and self.miss == 0
 
     def get_tensor_memo(self, t: MetaTensorDesc) -> Optional[torch.Tensor]:
-        return self.tensor_memo.get(_make_tensor_memo_key(t), None)
+        key = make_tensor_memo_key(t.id, t.size, t.dtype, t.device, t.type, t.ctx)
+        return self.tensor_memo.get(key, None)
 
     def _checked_get_tensor_memo(self, t: MetaTensorDesc) -> _TensorT:
-        r = self.tensor_memo.get(_make_tensor_memo_key(t), None)
+        key = make_tensor_memo_key(t.id, t.size, t.dtype, t.device, t.type, t.ctx)
+        r = self.tensor_memo.get(key, None)
         assert r is not None
         return r
 
     def set_tensor_memo(self, t: MetaTensorDesc, v: _TensorT) -> None:
-        self.tensor_memo[_make_tensor_memo_key(t)] = v
+        key = make_tensor_memo_key(t.id, t.size, t.dtype, t.device, t.type, t.ctx)
+        self.tensor_memo[key] = v
 
     def get_storage_memo(self, s: MetaStorageDesc) -> Optional[torch.UntypedStorage]:
         return self.storage_memo.get(s.id, None)
